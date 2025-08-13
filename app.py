@@ -474,7 +474,7 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
                 message_placeholder.markdown(displayed_text + "▌")
                 # Sleep for a short duration to simulate streaming
                 # Adjust time for faster/slower streaming
-                time.sleep(0.01)
+                time.sleep(0.10)
             # Final update without the cursor
             message_placeholder.markdown(displayed_text)
         else:
