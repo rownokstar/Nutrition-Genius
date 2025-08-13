@@ -1,6 +1,7 @@
-# app.py - Nutrition Genius with Thinking Process Display
+# app.py - Nutrition Genius with Slower Streaming Speed
 # Developed by: DM Shahriar Hossain (https://github.com/rownokstar/)
 
+# ... (Imports remain the same)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,8 +20,9 @@ st.markdown("> *Smart Dataset Auto-Detector & AI Assistant*")
 st.markdown("**Developed by: [DM Shahriar Hossain](https://linkedin.com/in/dm-shahriar-hossain/)**")
 
 # --- Session State ---
+# ... (Session state initialization remains the same)
 if "df" not in st.session_state:
-    st.session_state.df = None # Processed/sampled df for display/search
+    st.session_state.df = None
 if "index" not in st.session_state:
     st.session_state.index = None
 if "model" not in st.session_state:
@@ -32,23 +34,23 @@ if "processed" not in st.session_state:
 if "sentences" not in st.session_state:
     st.session_state.sentences = None
 if "original_df" not in st.session_state:
-    st.session_state.original_df = None # Full original df for rule-based queries
+    st.session_state.original_df = None
 if "column_mapping" not in st.session_state:
-    st.session_state.column_mapping = {} # Map generic names to actual column indices/names
+    st.session_state.column_mapping = {}
 
 # --- Auto Dataset Type Detection ---
+# ... (Function remains the same)
 def detect_dataset_type(df):
-    """Automatically detect if dataset is supervised or unsupervised"""
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     numeric_ratio = len(numeric_cols) / len(df.columns) if len(df.columns) > 0 else 0
     if numeric_ratio > 0.5:
-        return "unsupervised" # Nutrition data is mostly numeric
+        return "unsupervised"
     else:
         return "supervised"
 
 # --- Optimized Smart Processing with Progress Tracking ---
+# ... (Function remains largely the same, minor comment update)
 def smart_process_dataset(df, data_type):
-    """Smart processing with automatic optimization and progress tracking"""
     total_rows = len(df)
 
     if total_rows > 10000:
@@ -110,12 +112,8 @@ def smart_process_dataset(df, data_type):
         return None, None, False, str(e)
 
 # --- Column Mapping Helper ---
+# ... (Function remains the same)
 def identify_nutrition_columns(df):
-    """
-    Attempt to identify key nutrition columns based on position.
-    Assumes columns are roughly in this order:
-    [ID, Fat, Carbs, Sugars, Protein, Salt, Sodium, Energy_kcal, Fiber, G_sum/Exceeded, Product Name]
-    """
     mapping = {}
     num_cols = len(df.columns)
     if num_cols >= 10:
@@ -129,17 +127,14 @@ def identify_nutrition_columns(df):
             mapping['sodium_100g'] = df.columns[6]
             mapping['energy_kcal'] = df.columns[7]
             mapping['fiber_100g'] = df.columns[8]
-            # mapping['g_sum_or_exceeded'] = df.columns[9] # Often not needed
-            mapping['product'] = df.columns[-1] # Last column is usually the name
+            mapping['product'] = df.columns[-1]
         except IndexError:
             pass
     return mapping
 
 # --- Enhanced Response Generator with Natural Language, Formatting, and Thinking ---
+# ... (Function remains the same)
 def generate_response_with_thinking(query, original_df, column_mapping):
-    """
-    Generate a natural language response with potential table/chart and thinking process.
-    """
     chart = None
     thinking_steps = []
     response_parts = []
@@ -149,7 +144,6 @@ def generate_response_with_thinking(query, original_df, column_mapping):
         response_parts.append("⚠️ The dataset needs to be processed correctly first. Please re-upload and wait for processing to complete.")
         return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-    # Ensure columns exist
     fat_col = column_mapping.get('fat_100g')
     carb_col = column_mapping.get('carbohydrates_100g')
     sugar_col = column_mapping.get('sugars_100g')
@@ -160,7 +154,6 @@ def generate_response_with_thinking(query, original_df, column_mapping):
 
     # --- Helper Function for Safe Numerical Filtering ---
     def safe_numeric_filter(df, column_name, condition_func, step_desc=""):
-        """Safely filter a DataFrame column by converting to numeric and applying a condition."""
         if step_desc:
              thinking_steps.append(f"🧠 **Thinking:** {step_desc}")
         if column_name not in df.columns:
@@ -395,6 +388,7 @@ def generate_response_with_thinking(query, original_df, column_mapping):
     return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
 # --- Sidebar: Upload Dataset ---
+# ... (Sidebar logic remains the same)
 with st.sidebar:
     st.header("📁 Upload Your Dataset")
     st.markdown("Developed by: [DM Shahriar Hossain](https://github.com/rownokstar/)")
@@ -403,33 +397,24 @@ with st.sidebar:
     if uploaded_file is not None:
         with st.spinner("📥 Loading dataset..."):
             try:
-                # Load dataset - Crucially, specify header=None as the first row is data
                 df = pd.read_csv(uploaded_file, header=None)
-
-                # Store original dataframe for rule-based queries
                 st.session_state.original_df = df.copy()
-
-                # Identify columns based on known structure
                 st.session_state.column_mapping = identify_nutrition_columns(df)
 
-                # Auto-optimize for performance (always sample for large datasets like this one)
                 if len(df) > 1000:
-                    df_display = df.sample(min(5, len(df)), random_state=42) # Show tiny sample
-                    df_process = df.sample(min(2000, len(df)), random_state=42) # Process sample
+                    df_display = df.sample(min(5, len(df)), random_state=42)
+                    df_process = df.sample(min(2000, len(df)), random_state=42)
                     st.warning(f"📊 Large dataset detected ({len(df)} rows). Processing a sample for optimal performance.")
                 else:
                     df_display = df.head(5)
                     df_process = df
 
-                st.session_state.df = df_display # Show smaller preview
-
-                # Auto-detect dataset type
+                st.session_state.df = df_display
                 detected_type = detect_dataset_type(df_process)
                 st.session_state.data_type = detected_type
 
                 st.success(f"✅ Dataset loaded! Detected as: **{detected_type.upper()}**")
 
-                # Quick processing
                 with st.spinner("🚀 Processing dataset... (This should be quick now)"):
                     index, sentences, success, error = smart_process_dataset(df_process, detected_type)
 
@@ -444,11 +429,9 @@ with st.sidebar:
 
             except Exception as e:
                 st.error(f"❌ Error loading dataset: {str(e)}")
-                # Reset state on error
                 st.session_state.original_df = None
                 st.session_state.column_mapping = {}
 
-    # Show dataset info
     if st.session_state.df is not None and st.session_state.column_mapping:
         st.subheader("📊 Dataset Info")
         st.write(f"**Type:** {st.session_state.data_type or 'Not processed'}")
@@ -458,13 +441,13 @@ with st.sidebar:
             st.dataframe(st.session_state.df.head(3))
 
 # --- Chat UI ---
+# ... (Chat UI logic with updated streaming speed)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        # Check if the message content is a tuple (thinking, response) or just a string
         if isinstance(msg["content"], tuple):
             thinking_content, response_content = msg["content"]
             if thinking_content:
@@ -473,7 +456,7 @@ for msg in st.session_state.messages:
             st.markdown(response_content)
         else:
             st.markdown(msg["content"])
-            
+
         if "chart" in msg and msg["chart"] is not None:
             st.plotly_chart(msg["chart"], use_container_width=True)
 
@@ -484,7 +467,6 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Generate response with thinking
         thinking_process, full_response, chart = generate_response_with_thinking(
             prompt,
             st.session_state.original_df,
@@ -493,35 +475,40 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
 
         # --- Streaming Display for Thinking ---
         if thinking_process:
-            with st.expander("🧠 My Thinking Process", expanded=True): # Start expanded
+            with st.expander("🧠 My Thinking Process", expanded=True):
                 thinking_placeholder = st.empty()
                 displayed_thinking = ""
                 thinking_lines = thinking_process.splitlines()
                 for i, line in enumerate(thinking_lines):
                     displayed_thinking += line + "\n"
                     thinking_placeholder.markdown(displayed_thinking)
-                    # Simulate processing delay for thinking steps
-                    if "✅" not in line and "❌" not in line and " HttpNotFound" not in line and "📉" not in line and "💡" not in line and "🔍" not in line and "🔢" not in line and "🔤" not in line: # Don't delay final outcomes
-                         time.sleep(0.1) # Adjust for speed of thinking display
+                    # Slower delay for thinking steps for better readability
+                    # Reduced frequency of delay to make it feel smoother but still slow
+                    if i % 2 == 0: # Delay every other line
+                         time.sleep(0.2) # Slower delay for thinking steps
 
-        # --- Streaming Display for Response ---
+        # --- Streaming Display for Response (SLOWED DOWN) ---
         if full_response:
             message_placeholder = st.empty()
             displayed_text = ""
             words = full_response.split(" ")
+            # --- ADJUSTED STREAMING SPEED ---
+            # Original delay was 0.01 seconds per word.
+            # New delay is 0.05 seconds per word. Adjust the 0.05 value to make it faster/slower.
+            word_delay = 0.05 # Slower speed (was 0.01)
+
             for i, word in enumerate(words):
                 displayed_text += word + " "
                 message_placeholder.markdown(displayed_text + "▌") # Cursor effect
-                time.sleep(0.01) # Adjust delay for streaming speed
+                # --- SLOWED DOWN DELAY ---
+                time.sleep(word_delay) # Increased delay for a more eye-soothing pace
             message_placeholder.markdown(displayed_text) # Final display without cursor
         else:
             st.markdown("Sorry, I couldn't generate a response for that query.")
 
-        # Display chart if generated
         if chart is not None:
             st.plotly_chart(chart, use_container_width=True)
 
-        # Store complete message in history (store thinking and response separately)
         st.session_state.messages.append({
             "role": "assistant",
             "content": (thinking_process, full_response),
