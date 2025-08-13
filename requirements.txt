@@ -4,4 +4,4 @@ numpy
 faiss-cpu
 sentence-transformers
 plotly
-tabulate  
+tabulate
