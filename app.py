@@ -1,4 +1,4 @@
-# app.py - Nutrition Genius with Optimized Performance and Improved Responses (For nutrition_table.csv)
+# app.py - Nutrition Genius with Optimized Performance and Improved Responses (For nutrition_table.csv) - FIXED
 # Developed by: DM Shahriar Hossain (https://github.com/rownokstar/)
 
 import streamlit as st
@@ -119,21 +119,20 @@ def identify_nutrition_columns(df):
     Attempt to identify key nutrition columns based on position or data characteristics.
     This is specific to the structure seen in nutrition_table.csv.
     Assumes columns are roughly in this order:
-    [ID, Fat, Carbs, Sugars, Protein, ... , Product Name]
+    [ID, Fat, Carbs, Sugars, Protein, Salt, Energy_kcal, Reconstructed_energy, G_sum, Exceeded, Product Name]
     """
     mapping = {}
     num_cols = len(df.columns)
     if num_cols >= 10: # Sanity check
         # Based on the sample, these seem to be consistent positions
-        # Adjust indices if your data structure differs slightly
         try:
             mapping['id'] = df.columns[0]
             mapping['fat_100g'] = df.columns[1] # 11.11, 16.67 etc.
             mapping['carbohydrates_100g'] = df.columns[2] # 44.44, 33.33 etc.
             mapping['sugars_100g'] = df.columns[3] # 33.33, 33.33 etc.
             mapping['proteins_100g'] = df.columns[4] # 22.22, 22.22 etc.
-            # mapping['salt_100g'] = df.columns[5] # 20.883879999999998 etc.
-            # mapping['sodium_100g'] = df.columns[6] # 1393.0 etc.
+            mapping['salt_100g'] = df.columns[5] # 20.883879999999998 etc.
+            mapping['sodium_100g'] = df.columns[6] # 1393.0 etc. (Often used interchangeably, but technically different)
             mapping['energy_kcal'] = df.columns[7] # 1566.51 etc.
             # mapping['energy_kj'] = df.columns[7] # 1566.51 etc. (Seems kcal is col 7)
             mapping['fiber_100g'] = df.columns[8] # 77.77, 72.22 etc.
@@ -141,6 +140,7 @@ def identify_nutrition_columns(df):
             mapping['product'] = df.columns[-1] # Last column is usually the name
         except IndexError:
             pass # If columns don't match expected structure
+    # st.write("DEBUG: Column Mapping Attempt:", mapping) # For debugging
     return mapping
 
 # --- Enhanced Response Generator with Natural Language and Formatting ---
@@ -164,21 +164,45 @@ def generate_response(query, original_df, column_mapping):
     fiber_col = column_mapping.get('fiber_100g')
     product_col = column_mapping.get('product')
 
+    # --- Helper Function for Safe Numerical Filtering ---
+    def safe_numeric_filter(df, column_name, condition_func):
+        """Safely filter a DataFrame column by converting to numeric and applying a condition."""
+        if column_name not in df.columns:
+            return pd.DataFrame() # Return empty if column doesn't exist
+        # Convert to numeric, coercing errors to NaN
+        df_copy = df.copy()
+        df_copy[column_name] = pd.to_numeric(df_copy[column_name], errors='coerce')
+        # Drop rows where conversion resulted in NaN for this specific column
+        df_filtered = df_copy.dropna(subset=[column_name])
+        # Apply the numerical condition
+        try:
+            mask = condition_func(df_filtered[column_name])
+            return df_filtered[mask]
+        except Exception as e:
+            # st.warning(f"Error filtering column {column_name}: {e}") # Optional debug warning
+            return pd.DataFrame() # Return empty on filter error
+
     # 1. Show top N foods highest in protein
     top_protein_match = re.search(r"top\s*(\d+)\s*.*(?:high.*|highest.*|rich.*|most.*|greatest.*)\s*protein", query.lower())
     if top_protein_match and protein_col and product_col:
         try:
             n = int(top_protein_match.group(1))
             if protein_col in original_df.columns and product_col in original_df.columns:
-                # Filter out rows where protein content might be missing/invalid for sorting
-                filtered_df = original_df.dropna(subset=[protein_col])
-                top_proteins = filtered_df.nlargest(n, protein_col)[[product_col, protein_col]]
-                if not top_proteins.empty:
-                    response_parts.append(f"🏆 Here are the top {n} foods highest in protein (per 100g):")
-                    table_md = top_proteins.to_markdown(index=False)
-                    response_parts.append(f"\n{table_md}\n")
+                # Use helper to safely filter and sort
+                filtered_df = safe_numeric_filter(original_df, protein_col, lambda x: x >= 0) # Ensure non-negative values
+                if not filtered_df.empty:
+                    top_proteins = filtered_df.nlargest(n, protein_col)[[product_col, protein_col]]
+                    if not top_proteins.empty:
+                        response_parts.append(f"🏆 Here are the top {n} foods highest in protein (per 100g):")
+                        # Ensure numeric formatting for display
+                        top_proteins_display = top_proteins.copy()
+                        top_proteins_display[protein_col] = top_proteins_display[protein_col].apply(lambda x: f"{x:.2f}g")
+                        table_md = top_proteins_display.to_markdown(index=False)
+                        response_parts.append(f"\n{table_md}\n")
+                    else:
+                        response_parts.append(f"😕 Couldn't find enough foods with valid protein data for the top {n} list.")
                 else:
-                    response_parts.append(f"😕 Couldn't find enough foods with valid protein data for the top {n} list.")
+                    response_parts.append(f"😕 No foods with valid protein data found.")
             else:
                 response_parts.append("❌ Required columns for protein data not found correctly.")
         except (ValueError, IndexError):
@@ -192,16 +216,25 @@ def generate_response(query, original_df, column_mapping):
              carb_threshold = float(carb_fat_match.group(1))
              fat_threshold = float(carb_fat_match.group(2))
              if carb_col in original_df.columns and fat_col in original_df.columns and product_col in original_df.columns:
-                 # Filter out rows with missing data
-                 filtered_df = original_df.dropna(subset=[carb_col, fat_col])
-                 mask = (filtered_df[carb_col] > carb_threshold) & (filtered_df[fat_col] < fat_threshold)
-                 filtered_foods = filtered_df[mask][[product_col, carb_col, fat_col]]
-                 if not filtered_foods.empty:
+                 # Filter carbs > threshold
+                 df_carbs_ok = safe_numeric_filter(original_df, carb_col, lambda x: x > carb_threshold)
+                 if df_carbs_ok.empty:
+                      response_parts.append(f"📭 No foods found with carbohydrates > {carb_threshold}g.")
+                      return "\n".join(response_parts), chart
+
+                 # Filter fat < threshold from the already carb-filtered set
+                 df_final = safe_numeric_filter(df_carbs_ok, fat_col, lambda x: x < fat_threshold)
+                 if not df_final.empty:
                      response_parts.append(f"✅ Found foods with more than {carb_threshold}g carbs and less than {fat_threshold}g fat per 100g:")
-                     table_md = filtered_foods.head(10).to_markdown(index=False) # Limit display
+                     # Select and format columns for display
+                     result_df = df_final[[product_col, carb_col, fat_col]].head(10)
+                     result_df_display = result_df.copy()
+                     result_df_display[carb_col] = result_df_display[carb_col].apply(lambda x: f"{x:.2f}g")
+                     result_df_display[fat_col] = result_df_display[fat_col].apply(lambda x: f"{x:.2f}g")
+                     table_md = result_df_display.to_markdown(index=False)
                      response_parts.append(f"\n{table_md}\n")
                  else:
-                      response_parts.append(f"📭 No foods found matching the criteria (carbs > {carb_threshold}g AND fat < {fat_threshold}g).")
+                      response_parts.append(f"📭 No foods found matching both criteria (carbs > {carb_threshold}g AND fat < {fat_threshold}g).")
              else:
                   response_parts.append("❌ Required columns for carbs/fat filtering not found correctly.")
          except (ValueError, IndexError):
@@ -215,12 +248,15 @@ def generate_response(query, original_df, column_mapping):
         try:
             threshold = float(fat_above_match.group(1))
             if fat_col in original_df.columns and product_col in original_df.columns:
-                # Filter out rows with missing data
-                filtered_df = original_df.dropna(subset=[fat_col])
-                high_fat_foods = filtered_df[filtered_df[fat_col] > threshold][[product_col, fat_col]]
-                if not high_fat_foods.empty:
+                # Use helper to safely filter
+                high_fat_foods_df = safe_numeric_filter(original_df, fat_col, lambda x: x > threshold)
+                if not high_fat_foods_df.empty:
                     response_parts.append(f"🥓 Here are foods with fat content above {threshold}g per 100g:")
-                    table_md = high_fat_foods.head(10).to_markdown(index=False) # Limit display
+                    # Select and format columns for display
+                    result_df = high_fat_foods_df[[product_col, fat_col]].head(10)
+                    result_df_display = result_df.copy()
+                    result_df_display[fat_col] = result_df_display[fat_col].apply(lambda x: f"{x:.2f}g")
+                    table_md = result_df_display.to_markdown(index=False)
                     response_parts.append(f"\n{table_md}\n")
                 else:
                      response_parts.append(f"📭 No foods found with fat content above {threshold}g.")
@@ -241,36 +277,45 @@ def generate_response(query, original_df, column_mapping):
                 matching_rows = original_df[original_df[product_col].str.contains(food_name, case=False, na=False)]
                 if not matching_rows.empty:
                     food_data = matching_rows.iloc[0]
-                    # Define nutrients for pie chart
+                    # Define nutrients for pie chart (ensure columns exist and data is numeric)
                     nutrients_for_chart = [
                         (fat_col, 'Fat'),
                         (carb_col, 'Carbohydrates'),
                         (protein_col, 'Protein')
-                        # Add sugar if needed: (sugar_col, 'Sugar')
                     ]
-                    # Collect valid data
+                    # Collect valid data for chart
                     values = []
                     names = []
+                    details = [] # For text list
                     for col_key, name in nutrients_for_chart:
                         col = column_mapping.get(col_key)
-                        if col and col in food_data.index and pd.notna(food_data[col]) and food_data[col] >= 0:
-                            values.append(food_data[col])
-                            names.append(name)
+                        if col and col in food_data.index:
+                            val_str = food_data[col]
+                            # Try to convert to float for charting
+                            try:
+                                val_num = float(val_str)
+                                if val_num >= 0: # Only include non-negative values
+                                    values.append(val_num)
+                                    names.append(name)
+                                    details.append(f"- **{name}**: {val_num:.2f}g")
+                                else:
+                                    details.append(f"- **{name}**: Invalid data ({val_str})")
+                            except (ValueError, TypeError):
+                                details.append(f"- **{name}**: Not available ({val_str})")
+                        else:
+                             details.append(f"- **{name}**: Column not found")
 
-                    # Display nutrient list
+                    # Display nutrient list details
                     response_parts.append(f"📊 Nutritional breakdown for **{food_data[product_col]}** (per 100g):")
-                    nutrient_list = [
-                        (fat_col, 'Fat'),
-                        (carb_col, 'Carbohydrates'),
-                        (sugar_col, 'Sugars'),
-                        (protein_col, 'Protein'),
-                        (kcal_col, 'Calories (kcal)'),
-                        (fiber_col, 'Fiber')
-                    ]
-                    for col_key, name in nutrient_list:
-                        col = column_mapping.get(col_key)
-                        if col and col in food_data.index and pd.notna(food_data[col]):
-                            response_parts.append(f"- **{name}**: {food_data[col]:.2f}g" if not 'kcal' in name else f"- **{name}**: {food_data[col]:.0f} kcal")
+                    response_parts.extend(details)
+
+                    # Energy
+                    if kcal_col and kcal_col in food_data.index:
+                        try:
+                            kcal_val = float(food_data[kcal_col])
+                            response_parts.append(f"- **Energy**: {kcal_val:.0f} kcal")
+                        except (ValueError, TypeError):
+                            response_parts.append(f"- **Energy**: Not available ({food_data[kcal_col]})")
 
                     # Create pie chart if valid data exists
                     if values and sum(values) > 0:
@@ -299,11 +344,14 @@ def generate_response(query, original_df, column_mapping):
         try:
             threshold = float(protein_above_match.group(1))
             if protein_col in original_df.columns and product_col in original_df.columns:
-                filtered_df = original_df.dropna(subset=[protein_col])
-                high_protein_foods = filtered_df[filtered_df[protein_col] > threshold][[product_col, protein_col]]
-                if not high_protein_foods.empty:
+                high_protein_foods_df = safe_numeric_filter(original_df, protein_col, lambda x: x > threshold)
+                if not high_protein_foods_df.empty:
                     response_parts.append(f"🍗 Here are foods with protein content above {threshold}g per 100g:")
-                    table_md = high_protein_foods.head(10).to_markdown(index=False)
+                    # Select and format columns for display
+                    result_df = high_protein_foods_df[[product_col, protein_col]].head(10)
+                    result_df_display = result_df.copy()
+                    result_df_display[protein_col] = result_df_display[protein_col].apply(lambda x: f"{x:.2f}g")
+                    table_md = result_df_display.to_markdown(index=False)
                     response_parts.append(f"\n{table_md}\n")
                 else:
                      response_parts.append(f"📭 No foods found with protein content above {threshold}g.")
@@ -332,15 +380,15 @@ with st.sidebar:
     if uploaded_file is not None:
         with st.spinner("📥 Loading dataset..."):
             try:
-                # Load dataset
-                df = pd.read_csv(uploaded_file, header=None) # Load without assuming header
+                # Load dataset - Crucially, specify header=None as the first row is data
+                df = pd.read_csv(uploaded_file, header=None)
 
                 # Store original dataframe for rule-based queries
                 st.session_state.original_df = df.copy()
 
-                # Identify columns
+                # Identify columns based on known structure
                 st.session_state.column_mapping = identify_nutrition_columns(df)
-                # st.write("Identified Columns:", st.session_state.column_mapping) # Debug
+                # st.write("DEBUG: Identified Columns:", st.session_state.column_mapping) # Debug
 
                 # Auto-optimize for performance (always sample for large datasets like this one)
                 if len(df) > 1000:
@@ -408,6 +456,7 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
 
     with st.chat_message("assistant"):
         # Simulate streaming by displaying response word by word
+        # Pass the original df and column mapping
         full_response, chart = generate_response(
             prompt,
             st.session_state.original_df,
@@ -415,13 +464,21 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
         )
 
         # --- Streaming Display ---
-        message_placeholder = st.empty()
-        displayed_text = ""
-        for word in full_response.split(" "):
-            displayed_text += word + " "
-            message_placeholder.markdown(displayed_text + "▌") # Cursor effect
-            time.sleep(0.01) # Adjust delay for streaming speed
-        message_placeholder.markdown(displayed_text) # Final display without cursor
+        if full_response: # Check if response is not None/empty
+            message_placeholder = st.empty()
+            displayed_text = ""
+            words = full_response.split(" ")
+            for i, word in enumerate(words):
+                displayed_text += word + " "
+                # Update placeholder with text and cursor
+                message_placeholder.markdown(displayed_text + "▌")
+                # Sleep for a short duration to simulate streaming
+                # Adjust time for faster/slower streaming
+                time.sleep(0.01)
+            # Final update without the cursor
+            message_placeholder.markdown(displayed_text)
+        else:
+            st.markdown("Sorry, I couldn't generate a response for that query.")
 
         # Display chart if generated
         if chart is not None:
@@ -430,7 +487,7 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
         # Store complete message in history
         st.session_state.messages.append({
             "role": "assistant",
-            "content": full_response,
+            "content": full_response if full_response else "No response generated.",
             "chart": chart
         })
 
