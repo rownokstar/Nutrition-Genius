@@ -1,4 +1,4 @@
-# app.py - Nutrition Genius with Optimized Performance
+# app.py - Nutrition Genius with Optimized Performance and Improved Responses
 # Developed by: DM Shahriar Hossain (https://github.com/rownokstar/)
 
 import streamlit as st
@@ -10,6 +10,7 @@ import plotly.express as px
 from io import StringIO
 import time
 import hashlib
+import re
 
 # --- Config ---
 st.set_page_config(page_title="🍏 Nutrition Genius", page_icon="🍏", layout="wide")
@@ -30,6 +31,8 @@ if "processed" not in st.session_state:
     st.session_state.processed = False
 if "sentences" not in st.session_state:
     st.session_state.sentences = None
+if "original_df" not in st.session_state:
+    st.session_state.original_df = None
 
 # --- Auto Dataset Type Detection ---
 def detect_dataset_type(df):
@@ -129,42 +132,138 @@ def smart_process_dataset(df, data_type):
             status.empty()
         return None, None, False, str(e)
 
-# --- RAG Functions ---
-def retrieve(query, k=3):
-    if st.session_state.index is None or not st.session_state.processed:
-        return pd.DataFrame()
-    
-    try:
-        query_vec = st.session_state.model.encode([query])
-        D, I = st.session_state.index.search(np.array(query_vec).astype('float32'), k)
-        
-        results = []
-        for i in I[0]:
-            if i != -1 and st.session_state.sentences and i < len(st.session_state.sentences):
-                # Try to reconstruct the row from stored sentences
-                # This is a simplified approach - in production, store the actual dataframe rows
-                results.append({"Matched Data": st.session_state.sentences[i][:200] + "..."})
-        
-        return pd.DataFrame(results).drop_duplicates()
-    except Exception as e:
-        st.warning(f"Search error: {str(e)}")
-        return pd.DataFrame()
-
-# --- Response Generator ---
-def generate_response(query):
-    if not st.session_state.processed:
-        return "⚠️ Please upload and process a dataset first.", None
-
-    results = retrieve(query, k=3)
+# --- Response Generator with Natural Language and Formatting ---
+def generate_response(query, original_df):
+    """
+    Generate a natural language response with potential table/chart.
+    This is a rule-based approach for specific queries until full RAG is implemented.
+    """
     chart = None
+    response_parts = []
+    
+    # --- Rule-based Responses for Specific Queries ---
+    # 1. List foods with saturated fat content above Xg
+    # Note: The provided dataset doesn't seem to have a specific 'saturated fat' column.
+    # We'll assume 'fat_100g' is total fat. Let's find foods with high total fat.
+    saturated_fat_match = re.search(r"saturated fat.*above\s*(\d+\.?\d*)\s*g", query.lower())
+    fat_match = re.search(r"(?:total\s*)?fat.*above\s*(\d+\.?\d*)\s*g", query.lower()) or saturated_fat_match
+    
+    if fat_match:
+        try:
+            threshold = float(fat_match.group(1))
+            # Assume 'fat_100g' column exists
+            if 'fat_100g' in original_df.columns:
+                high_fat_foods = original_df[original_df['fat_100g'] > threshold]
+                if not high_fat_foods.empty:
+                    response_parts.append(f"Here are foods with fat content above {threshold}g per 100g:")
+                    # Select relevant columns for display
+                    cols_to_show = [col for col in ['product', 'fat_100g'] if col in original_df.columns]
+                    if not cols_to_show:
+                         cols_to_show = original_df.columns[:min(5, len(original_df.columns))] # Show first 5 if specific cols not found
+                    # Limit results for display
+                    high_fat_foods_display = high_fat_foods[cols_to_show].head(10) 
+                    # Format as markdown table string
+                    table_md = high_fat_foods_display.to_markdown(index=False)
+                    response_parts.append(f"\n{table_md}\n")
+                else:
+                     response_parts.append(f"I couldn't find any foods with fat content above {threshold}g per 100g in the dataset.")
+            else:
+                 response_parts.append("The dataset doesn't seem to have a 'fat_100g' column to filter by fat content.")
+        except (ValueError, IndexError):
+             response_parts.append("I couldn't understand the fat threshold value from your query.")
+        return "\n".join(response_parts), chart
 
-    # Show retrieved data
-    if not results.empty:
-        response_text = "🔍 Retrieved matching records:\n\n"
-        response_text += results.to_markdown(index=False) if len(results) > 0 else "No detailed results available."
-        return response_text, None
-    else:
-        return "❌ No matching records found in your dataset.", None
+    # 2. Show me the top N foods highest in protein
+    top_protein_match = re.search(r"top\s*(\d+)\s*.*protein", query.lower())
+    if top_protein_match:
+        try:
+            n = int(top_protein_match.group(1))
+            if 'proteins_100g' in original_df.columns and 'product' in original_df.columns:
+                top_proteins = original_df.nlargest(n, 'proteins_100g')[['product', 'proteins_100g']]
+                response_parts.append(f"Here are the top {n} foods highest in protein (per 100g):")
+                table_md = top_proteins.to_markdown(index=False)
+                response_parts.append(f"\n{table_md}\n")
+                
+                # Offer to visualize
+                if st.button("Show Protein Chart"):
+                    fig = px.bar(top_proteins, x='product', y='proteins_100g', title=f"Top {n} High-Protein Foods")
+                    st.plotly_chart(fig)
+            else:
+                response_parts.append("Required columns ('product', 'proteins_100g') not found for this query.")
+        except (ValueError, IndexError):
+            response_parts.append("I couldn't understand the number 'N' from your query.")
+        return "\n".join(response_parts), chart
+
+    # 3. Find foods with more than Xg carbs and less than Yg fat
+    carb_fat_match = re.search(r"more than\s*(\d+\.?\d*)\s*g.*carbohydrates.*less than\s*(\d+\.?\d*)\s*g.*fat", query.lower())
+    if carb_fat_match:
+         try:
+             carb_threshold = float(carb_fat_match.group(1))
+             fat_threshold = float(carb_fat_match.group(2))
+             if 'carbohydrates_100g' in original_df.columns and 'fat_100g' in original_df.columns and 'product' in original_df.columns:
+                 filtered_foods = original_df[
+                     (original_df['carbohydrates_100g'] > carb_threshold) &
+                     (original_df['fat_100g'] < fat_threshold)
+                 ][['product', 'carbohydrates_100g', 'fat_100g']]
+                 if not filtered_foods.empty:
+                     response_parts.append(f"Foods with more than {carb_threshold}g carbs and less than {fat_threshold}g fat per 100g:")
+                     table_md = filtered_foods.head(10).to_markdown(index=False)
+                     response_parts.append(f"\n{table_md}\n")
+                 else:
+                      response_parts.append(f"No foods found matching those criteria.")
+             else:
+                  response_parts.append("Required columns not found for this query.")
+         except (ValueError, IndexError):
+              response_parts.append("I couldn't parse the carbohydrate or fat thresholds.")
+         return "\n".join(response_parts), chart
+
+    # 4. Nutritional breakdown of a specific food (pie chart)
+    breakdown_match = re.search(r"nutritional breakdown.*(?:of|for)\s*(.*)", query.lower())
+    if breakdown_match:
+        food_name = breakdown_match.group(1).strip()
+        # Find matching food (simple substring match)
+        matching_rows = original_df[original_df['product'].str.contains(food_name, case=False, na=False)]
+        if not matching_rows.empty:
+            food_data = matching_rows.iloc[0]
+            # Assume standard nutrition columns exist
+            nutrition_cols = ['fat_100g', 'carbohydrates_100g', 'proteins_100g']
+            # Check for sugar in carbohydrates
+            if 'sugars_100g' in original_df.columns and 'carbohydrates_100g' in original_df.columns:
+                 # Approximate fiber or other carbs if needed, but let's keep it simple
+                 # Pie chart needs positive values, ensure they exist or are calculated sensibly
+                 values = [food_data.get(col, 0) for col in nutrition_cols]
+                 names = ['Fat', 'Carbohydrates', 'Protein']
+                 
+                 # Filter out non-existent or negative values for charting
+                 valid_data = [(name, val) for name, val in zip(names, values) if pd.notna(val) and val >= 0]
+                 if valid_data:
+                     names_filtered, values_filtered = zip(*valid_data)
+                     if sum(values_filtered) > 0: # Avoid empty chart
+                         fig = px.pie(values=values_filtered, names=names_filtered, title=f"Nutritional Breakdown: {food_data['product']}")
+                         chart = fig
+                         response_parts.append(f"Here is the nutritional breakdown for {food_data['product']} (per 100g):")
+                         # List the values
+                         for name, val in valid_data:
+                             response_parts.append(f"- {name}: {val:.2f}g")
+                     else:
+                         response_parts.append(f"Nutritional data for {food_data['product']} is not suitable for a pie chart.")
+                 else:
+                      response_parts.append(f"Could not extract valid nutritional data for {food_data['product']}.")
+            else:
+                response_parts.append("Standard nutrition columns not found for breakdown.")
+        else:
+            response_parts.append(f"Food '{food_name}' not found in the dataset.")
+        return "\n".join(response_parts), chart
+
+    # --- Default/Fallback Response (Simplified RAG-like) ---
+    # This part would ideally be replaced by a full RAG implementation.
+    # For now, it returns a generic message.
+    response_parts.append("I'm still learning to understand all your questions perfectly!")
+    response_parts.append("Try asking specific questions like:")
+    response_parts.append("- 'Show top 5 foods highest in protein'")
+    response_parts.append("- 'Find foods with fat content above 20g'")
+    response_parts.append("- 'Nutritional breakdown of Greek Yogurt'")
+    return "\n".join(response_parts), chart
 
 # --- Sidebar: Upload Dataset ---
 with st.sidebar:
@@ -176,6 +275,9 @@ with st.sidebar:
         try:
             # Load dataset
             df = pd.read_csv(uploaded_file)
+            
+            # Store original dataframe for rule-based queries
+            st.session_state.original_df = df.copy()
             
             # Auto-optimize for performance
             if len(df) > 5000:
@@ -231,24 +333,37 @@ for msg in st.session_state.messages:
             st.plotly_chart(msg["chart"], use_container_width=True)
 
 # Chat input
-if prompt := st.chat_input("Ask anything about your dataset..."):
+if prompt := st.chat_input("Ask anything about your dataset (e.g., 'Top 5 high protein foods')..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        response, chart = generate_response(prompt)
-        st.markdown(response)
+        # Simulate streaming by displaying response word by word (basic simulation)
+        full_response, chart = generate_response(prompt, st.session_state.original_df if st.session_state.original_df is not None else pd.DataFrame())
+        
+        # --- Streaming Display ---
+        message_placeholder = st.empty()
+        displayed_text = ""
+        for word in full_response.split(" "):
+            displayed_text += word + " "
+            message_placeholder.markdown(displayed_text + "▌") # Cursor effect
+            time.sleep(0.01) # Adjust delay for streaming speed
+        message_placeholder.markdown(displayed_text) # Final display without cursor
+        
+        # Display chart if generated
         if chart is not None:
             st.plotly_chart(chart, use_container_width=True)
+            
+        # Store complete message in history
         st.session_state.messages.append({
             "role": "assistant",
-            "content": response,
+            "content": full_response,
             "chart": chart
         })
 
 # --- Tips ---
-st.info("💡 Try: 'Show records with high values' or 'Find similar patterns'")
-st.info("💡 The system automatically detects if your dataset is supervised or unsupervised!")
+st.info("💡 Try: 'Show top 5 foods highest in protein' or 'Find foods with fat content above 20g'")
+st.info("💡 Ask for 'nutritional breakdown of [food name]' for pie charts!")
 st.markdown("---")
 st.markdown("👨‍💻 Developed by: [DM Shahriar Hossain](https://linkedin.com/in/dm-shahriar-hossain/) | [GitHub](https://github.com/rownokstar/)")
