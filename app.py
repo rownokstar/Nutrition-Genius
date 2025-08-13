@@ -1,4 +1,4 @@
-# app.py - Nutrition Genius with Optimized Performance and Improved Responses (For nutrition_table.csv) - FIXED
+# app.py - Nutrition Genius with Thinking Process Display
 # Developed by: DM Shahriar Hossain (https://github.com/rownokstar/)
 
 import streamlit as st
@@ -39,7 +39,6 @@ if "column_mapping" not in st.session_state:
 # --- Auto Dataset Type Detection ---
 def detect_dataset_type(df):
     """Automatically detect if dataset is supervised or unsupervised"""
-    # Very basic heuristic based on numeric density for this specific case
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     numeric_ratio = len(numeric_cols) / len(df.columns) if len(df.columns) > 0 else 0
     if numeric_ratio > 0.5:
@@ -55,14 +54,11 @@ def smart_process_dataset(df, data_type):
     if total_rows > 10000:
         sample_size = 2000
         df_process = df.sample(n=sample_size, random_state=42)
-        # st.warning(f"📊 Large dataset detected ({total_rows} rows). Processing {sample_size} representative samples for optimal performance.")
     elif total_rows > 1000:
         sample_size = min(1000, total_rows)
         df_process = df.sample(n=sample_size, random_state=42)
-        # st.info(f"⚡ Processing {sample_size} rows for better performance.")
     else:
         df_process = df
-        # st.info(f"🚀 Processing all {total_rows} rows.")
 
     try:
         progress_bar = st.progress(0)
@@ -116,44 +112,42 @@ def smart_process_dataset(df, data_type):
 # --- Column Mapping Helper ---
 def identify_nutrition_columns(df):
     """
-    Attempt to identify key nutrition columns based on position or data characteristics.
-    This is specific to the structure seen in nutrition_table.csv.
+    Attempt to identify key nutrition columns based on position.
     Assumes columns are roughly in this order:
-    [ID, Fat, Carbs, Sugars, Protein, Salt, Energy_kcal, Reconstructed_energy, G_sum, Exceeded, Product Name]
+    [ID, Fat, Carbs, Sugars, Protein, Salt, Sodium, Energy_kcal, Fiber, G_sum/Exceeded, Product Name]
     """
     mapping = {}
     num_cols = len(df.columns)
-    if num_cols >= 10: # Sanity check
-        # Based on the sample, these seem to be consistent positions
+    if num_cols >= 10:
         try:
             mapping['id'] = df.columns[0]
-            mapping['fat_100g'] = df.columns[1] # 11.11, 16.67 etc.
-            mapping['carbohydrates_100g'] = df.columns[2] # 44.44, 33.33 etc.
-            mapping['sugars_100g'] = df.columns[3] # 33.33, 33.33 etc.
-            mapping['proteins_100g'] = df.columns[4] # 22.22, 22.22 etc.
-            mapping['salt_100g'] = df.columns[5] # 20.883879999999998 etc.
-            mapping['sodium_100g'] = df.columns[6] # 1393.0 etc. (Often used interchangeably, but technically different)
-            mapping['energy_kcal'] = df.columns[7] # 1566.51 etc.
-            # mapping['energy_kj'] = df.columns[7] # 1566.51 etc. (Seems kcal is col 7)
-            mapping['fiber_100g'] = df.columns[8] # 77.77, 72.22 etc.
-            # mapping['fruits_veg_nuts_100g'] = df.columns[9] # 0, 0 etc.
+            mapping['fat_100g'] = df.columns[1]
+            mapping['carbohydrates_100g'] = df.columns[2]
+            mapping['sugars_100g'] = df.columns[3]
+            mapping['proteins_100g'] = df.columns[4]
+            mapping['salt_100g'] = df.columns[5]
+            mapping['sodium_100g'] = df.columns[6]
+            mapping['energy_kcal'] = df.columns[7]
+            mapping['fiber_100g'] = df.columns[8]
+            # mapping['g_sum_or_exceeded'] = df.columns[9] # Often not needed
             mapping['product'] = df.columns[-1] # Last column is usually the name
         except IndexError:
-            pass # If columns don't match expected structure
-    # st.write("DEBUG: Column Mapping Attempt:", mapping) # For debugging
+            pass
     return mapping
 
-# --- Enhanced Response Generator with Natural Language and Formatting ---
-def generate_response(query, original_df, column_mapping):
+# --- Enhanced Response Generator with Natural Language, Formatting, and Thinking ---
+def generate_response_with_thinking(query, original_df, column_mapping):
     """
-    Generate a natural language response with potential table/chart.
+    Generate a natural language response with potential table/chart and thinking process.
     """
     chart = None
+    thinking_steps = []
     response_parts = []
 
     if original_df is None or column_mapping is None or len(column_mapping) == 0:
+        thinking_steps.append("⚠️ **Thinking:** The dataset needs to be processed correctly first.")
         response_parts.append("⚠️ The dataset needs to be processed correctly first. Please re-upload and wait for processing to complete.")
-        return "\n".join(response_parts), chart
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
     # Ensure columns exist
     fat_col = column_mapping.get('fat_100g')
@@ -165,136 +159,155 @@ def generate_response(query, original_df, column_mapping):
     product_col = column_mapping.get('product')
 
     # --- Helper Function for Safe Numerical Filtering ---
-    def safe_numeric_filter(df, column_name, condition_func):
+    def safe_numeric_filter(df, column_name, condition_func, step_desc=""):
         """Safely filter a DataFrame column by converting to numeric and applying a condition."""
+        if step_desc:
+             thinking_steps.append(f"🧠 **Thinking:** {step_desc}")
         if column_name not in df.columns:
-            return pd.DataFrame() # Return empty if column doesn't exist
-        # Convert to numeric, coercing errors to NaN
+            thinking_steps.append(f"❌ **Thinking:** Column '{column_name}' not found in dataset.")
+            return pd.DataFrame()
         df_copy = df.copy()
+        initial_count = len(df_copy)
+        thinking_steps.append(f"...Converting column '{column_name}' to numeric (errors become NaN)...")
         df_copy[column_name] = pd.to_numeric(df_copy[column_name], errors='coerce')
-        # Drop rows where conversion resulted in NaN for this specific column
+        after_conversion_count = len(df_copy.dropna(subset=[column_name]))
+        thinking_steps.append(f"...Dropping rows with invalid '{column_name}' (NaN). Went from {initial_count} to {after_conversion_count} rows...")
         df_filtered = df_copy.dropna(subset=[column_name])
-        # Apply the numerical condition
         try:
             mask = condition_func(df_filtered[column_name])
-            return df_filtered[mask]
+            final_df = df_filtered[mask]
+            thinking_steps.append(f"...Applied condition. Final count: {len(final_df)} rows.")
+            return final_df
         except Exception as e:
-            # st.warning(f"Error filtering column {column_name}: {e}") # Optional debug warning
-            return pd.DataFrame() # Return empty on filter error
+            thinking_steps.append(f"❌ **Thinking:** Error applying condition to column {column_name}: {e}")
+            return pd.DataFrame()
 
-    # 1. Show top N foods highest in protein
+    # --- 1. Show top N foods highest in protein ---
     top_protein_match = re.search(r"top\s*(\d+)\s*.*(?:high.*|highest.*|rich.*|most.*|greatest.*)\s*protein", query.lower())
     if top_protein_match and protein_col and product_col:
+        thinking_steps.append("🔍 **Thinking:** Query matches pattern for 'Top N foods highest in protein'.")
         try:
             n = int(top_protein_match.group(1))
+            thinking_steps.append(f"...Looking for top {n} foods by protein content.")
             if protein_col in original_df.columns and product_col in original_df.columns:
-                # Use helper to safely filter and sort
-                filtered_df = safe_numeric_filter(original_df, protein_col, lambda x: x >= 0) # Ensure non-negative values
+                thinking_steps.append("...Required columns found. Filtering data...")
+                filtered_df = safe_numeric_filter(original_df, protein_col, lambda x: x >= 0, "Filtering for valid (non-negative) protein values.")
                 if not filtered_df.empty:
+                    thinking_steps.append("...Sorting filtered data by protein content (descending)...")
                     top_proteins = filtered_df.nlargest(n, protein_col)[[product_col, protein_col]]
                     if not top_proteins.empty:
+                        thinking_steps.append("✅ **Thinking:** Found results. Formatting response...")
                         response_parts.append(f"🏆 Here are the top {n} foods highest in protein (per 100g):")
-                        # Ensure numeric formatting for display
                         top_proteins_display = top_proteins.copy()
                         top_proteins_display[protein_col] = top_proteins_display[protein_col].apply(lambda x: f"{x:.2f}g")
                         table_md = top_proteins_display.to_markdown(index=False)
                         response_parts.append(f"\n{table_md}\n")
                     else:
+                        thinking_steps.append("📭 **Thinking:** Couldn't find enough foods with valid protein data for the top list.")
                         response_parts.append(f"😕 Couldn't find enough foods with valid protein data for the top {n} list.")
                 else:
+                    thinking_steps.append("📭 **Thinking:** No foods with valid protein data found after filtering.")
                     response_parts.append(f"😕 No foods with valid protein data found.")
             else:
+                thinking_steps.append("❌ **Thinking:** Required columns for protein data not found correctly.")
                 response_parts.append("❌ Required columns for protein data not found correctly.")
         except (ValueError, IndexError):
+            thinking_steps.append("🔢 **Thinking:** Couldn't parse the number 'N'.")
             response_parts.append("🔢 I couldn't understand the number 'N' from your query. Please specify like 'top 5'.")
-        return "\n".join(response_parts), chart
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-    # 2. Find foods with more than Xg carbs and less than Yg fat
+    # --- 2. Find foods with more than Xg carbs and less than Yg fat ---
     carb_fat_match = re.search(r"more than\s*(\d+\.?\d*)\s*g.*(?:carbohydrates?|carbs?|carbs).*less than\s*(\d+\.?\d*)\s*g.*(?:fat|fats)", query.lower())
     if carb_fat_match and carb_col and fat_col and product_col:
-         try:
-             carb_threshold = float(carb_fat_match.group(1))
-             fat_threshold = float(carb_fat_match.group(2))
-             if carb_col in original_df.columns and fat_col in original_df.columns and product_col in original_df.columns:
-                 # Filter carbs > threshold
-                 df_carbs_ok = safe_numeric_filter(original_df, carb_col, lambda x: x > carb_threshold)
-                 if df_carbs_ok.empty:
-                      response_parts.append(f"📭 No foods found with carbohydrates > {carb_threshold}g.")
-                      return "\n".join(response_parts), chart
+        thinking_steps.append("🔍 **Thinking:** Query matches pattern for 'Foods with carbs > Xg AND fat < Yg'.")
+        try:
+            carb_threshold = float(carb_fat_match.group(1))
+            fat_threshold = float(carb_fat_match.group(2))
+            thinking_steps.append(f"...Carb threshold: > {carb_threshold}g, Fat threshold: < {fat_threshold}g.")
+            if carb_col in original_df.columns and fat_col in original_df.columns and product_col in original_df.columns:
+                thinking_steps.append("...Required columns found. Filtering data...")
+                df_carbs_ok = safe_numeric_filter(original_df, carb_col, lambda x: x > carb_threshold, f"Filtering for carbs > {carb_threshold}g.")
+                if df_carbs_ok.empty:
+                    thinking_steps.append("📭 **Thinking:** No foods found meeting the carb criterion.")
+                    response_parts.append(f"📭 No foods found with carbohydrates > {carb_threshold}g.")
+                    return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-                 # Filter fat < threshold from the already carb-filtered set
-                 df_final = safe_numeric_filter(df_carbs_ok, fat_col, lambda x: x < fat_threshold)
-                 if not df_final.empty:
-                     response_parts.append(f"✅ Found foods with more than {carb_threshold}g carbs and less than {fat_threshold}g fat per 100g:")
-                     # Select and format columns for display
-                     result_df = df_final[[product_col, carb_col, fat_col]].head(10)
-                     result_df_display = result_df.copy()
-                     result_df_display[carb_col] = result_df_display[carb_col].apply(lambda x: f"{x:.2f}g")
-                     result_df_display[fat_col] = result_df_display[fat_col].apply(lambda x: f"{x:.2f}g")
-                     table_md = result_df_display.to_markdown(index=False)
-                     response_parts.append(f"\n{table_md}\n")
-                 else:
-                      response_parts.append(f"📭 No foods found matching both criteria (carbs > {carb_threshold}g AND fat < {fat_threshold}g).")
-             else:
-                  response_parts.append("❌ Required columns for carbs/fat filtering not found correctly.")
-         except (ValueError, IndexError):
-              response_parts.append("🔢 I couldn't parse the carbohydrate or fat thresholds. Please use format like 'more than 20g carbs and less than 10g fat'.")
-         return "\n".join(response_parts), chart
+                df_final = safe_numeric_filter(df_carbs_ok, fat_col, lambda x: x < fat_threshold, f"Filtering for fat < {fat_threshold}g (from carb-filtered set).")
+                if not df_final.empty:
+                    thinking_steps.append("✅ **Thinking:** Found matching foods. Formatting response...")
+                    response_parts.append(f"✅ Found foods with more than {carb_threshold}g carbs and less than {fat_threshold}g fat per 100g:")
+                    result_df = df_final[[product_col, carb_col, fat_col]].head(10)
+                    result_df_display = result_df.copy()
+                    result_df_display[carb_col] = result_df_display[carb_col].apply(lambda x: f"{x:.2f}g")
+                    result_df_display[fat_col] = result_df_display[fat_col].apply(lambda x: f"{x:.2f}g")
+                    table_md = result_df_display.to_markdown(index=False)
+                    response_parts.append(f"\n{table_md}\n")
+                else:
+                    thinking_steps.append("📭 **Thinking:** No foods found meeting both criteria.")
+                    response_parts.append(f"📭 No foods found matching both criteria (carbs > {carb_threshold}g AND fat < {fat_threshold}g).")
+            else:
+                thinking_steps.append("❌ **Thinking:** Required columns for filtering not found.")
+                response_parts.append("❌ Required columns for carbs/fat filtering not found correctly.")
+        except (ValueError, IndexError):
+            thinking_steps.append("🔢 **Thinking:** Couldn't parse the thresholds.")
+            response_parts.append("🔢 I couldn't parse the carbohydrate or fat thresholds. Please use format like 'more than 20g carbs and less than 10g fat'.")
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-    # 3. Find foods with fat content above Xg
+    # --- 3. Find foods with fat content above Xg ---
     fat_above_match = re.search(r"(?:fat.*content|total fat|fats?).*above\s*(\d+\.?\d*)\s*g", query.lower()) or \
                       re.search(r"find.*foods.*(?:fat|fats).*above\s*(\d+\.?\d*)\s*g", query.lower())
     if fat_above_match and fat_col and product_col:
+        thinking_steps.append("🔍 **Thinking:** Query matches pattern for 'Foods with fat > Xg'.")
         try:
             threshold = float(fat_above_match.group(1))
+            thinking_steps.append(f"...Fat threshold: > {threshold}g.")
             if fat_col in original_df.columns and product_col in original_df.columns:
-                # Use helper to safely filter
-                high_fat_foods_df = safe_numeric_filter(original_df, fat_col, lambda x: x > threshold)
+                thinking_steps.append("...Required columns found. Filtering data...")
+                high_fat_foods_df = safe_numeric_filter(original_df, fat_col, lambda x: x > threshold, f"Filtering for fat > {threshold}g.")
                 if not high_fat_foods_df.empty:
+                    thinking_steps.append("✅ **Thinking:** Found matching foods. Formatting response...")
                     response_parts.append(f"🥓 Here are foods with fat content above {threshold}g per 100g:")
-                    # Select and format columns for display
                     result_df = high_fat_foods_df[[product_col, fat_col]].head(10)
                     result_df_display = result_df.copy()
                     result_df_display[fat_col] = result_df_display[fat_col].apply(lambda x: f"{x:.2f}g")
                     table_md = result_df_display.to_markdown(index=False)
                     response_parts.append(f"\n{table_md}\n")
                 else:
-                     response_parts.append(f"📭 No foods found with fat content above {threshold}g.")
+                    thinking_steps.append("📭 **Thinking:** No foods found meeting the fat criterion.")
+                    response_parts.append(f"📭 No foods found with fat content above {threshold}g.")
             else:
+                 thinking_steps.append("❌ **Thinking:** Required columns for fat filtering not found.")
                  response_parts.append("❌ Required columns for fat filtering not found correctly.")
         except (ValueError, IndexError):
+             thinking_steps.append("🔢 **Thinking:** Couldn't parse the fat threshold.")
              response_parts.append("🔢 I couldn't understand the fat threshold value. Please specify like 'fat content above 20g'.")
-        return "\n".join(response_parts), chart
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-    # 4. Nutritional breakdown of a specific food (pie chart)
+    # --- 4. Nutritional breakdown of a specific food (pie chart) ---
     breakdown_match = re.search(r"nutritional breakdown.*(?:of|for)\s*(.*)", query.lower()) or \
                       re.search(r"nutrition.*(?:of|for)\s*(.*)", query.lower())
     if breakdown_match and product_col:
+        thinking_steps.append("🔍 **Thinking:** Query matches pattern for 'Nutritional breakdown of [food]'.")
         food_name = breakdown_match.group(1).strip()
         if food_name:
-            # Find matching food (simple substring match)
+            thinking_steps.append(f"...Searching for food: '{food_name}'.")
             if product_col in original_df.columns:
+                thinking_steps.append("...Product column found. Searching...")
                 matching_rows = original_df[original_df[product_col].str.contains(food_name, case=False, na=False)]
                 if not matching_rows.empty:
                     food_data = matching_rows.iloc[0]
-                    # Define nutrients for pie chart (ensure columns exist and data is numeric)
-                    nutrients_for_chart = [
-                        (fat_col, 'Fat'),
-                        (carb_col, 'Carbohydrates'),
-                        (protein_col, 'Protein')
-                    ]
-                    # Collect valid data for chart
+                    thinking_steps.append(f"...Found '{food_data[product_col]}'. Extracting nutrient data...")
+                    nutrients_for_chart = [(fat_col, 'Fat'), (carb_col, 'Carbohydrates'), (protein_col, 'Protein')]
                     values = []
                     names = []
-                    details = [] # For text list
+                    details = []
                     for col_key, name in nutrients_for_chart:
                         col = column_mapping.get(col_key)
                         if col and col in food_data.index:
                             val_str = food_data[col]
-                            # Try to convert to float for charting
                             try:
                                 val_num = float(val_str)
-                                if val_num >= 0: # Only include non-negative values
+                                if val_num >= 0:
                                     values.append(val_num)
                                     names.append(name)
                                     details.append(f"- **{name}**: {val_num:.2f}g")
@@ -305,11 +318,9 @@ def generate_response(query, original_df, column_mapping):
                         else:
                              details.append(f"- **{name}**: Column not found")
 
-                    # Display nutrient list details
                     response_parts.append(f"📊 Nutritional breakdown for **{food_data[product_col]}** (per 100g):")
                     response_parts.extend(details)
 
-                    # Energy
                     if kcal_col and kcal_col in food_data.index:
                         try:
                             kcal_val = float(food_data[kcal_col])
@@ -317,59 +328,71 @@ def generate_response(query, original_df, column_mapping):
                         except (ValueError, TypeError):
                             response_parts.append(f"- **Energy**: Not available ({food_data[kcal_col]})")
 
-                    # Create pie chart if valid data exists
                     if values and sum(values) > 0:
-                        # Only show chart if there are meaningful values
-                        if any(v > 0.1 for v in values): # Avoid chart for negligible values
+                        if any(v > 0.1 for v in values):
+                             thinking_steps.append("✅ **Thinking:** Valid data found. Creating pie chart...")
                              fig = px.pie(values=values, names=names, title=f"Nutrient Distribution: {food_data[product_col]}")
                              chart = fig
                              response_parts.append("\n_(See pie chart below for visual breakdown)_")
                         else:
+                             thinking_steps.append("📉 **Thinking:** Nutrient values are too low for a meaningful chart.")
                              response_parts.append("\n_(Nutrient values are too low to display in a chart)_")
                     else:
+                        thinking_steps.append("📉 **Thinking:** Could not generate chart due to missing/invalid data.")
                         response_parts.append("\n_(Could not generate a chart due to missing or invalid data)_")
 
                 else:
-                    response_parts.append(f"📭 Food '{food_name}' not found in the dataset.")
+                    thinking_steps.append(" HttpNotFound **Thinking:** Food not found in dataset.")
+                    response_parts.append(f" HttpNotFound Food '{food_name}' not found in the dataset.")
             else:
+                 thinking_steps.append("❌ **Thinking:** Product name column not found.")
                  response_parts.append("❌ Product name column not found correctly.")
         else:
+             thinking_steps.append("🔤 **Thinking:** No food name specified in query.")
              response_parts.append("🔤 Please specify the food name for the breakdown.")
-        return "\n".join(response_parts), chart
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
-    # 5. Find foods with protein content above Xg
+    # --- 5. Find foods with protein content above Xg ---
     protein_above_match = re.search(r"(?:protein.*content|proteins?).*above\s*(\d+\.?\d*)\s*g", query.lower()) or \
                           re.search(r"find.*foods.*(?:protein|proteins).*above\s*(\d+\.?\d*)\s*g", query.lower())
     if protein_above_match and protein_col and product_col:
+        thinking_steps.append("🔍 **Thinking:** Query matches pattern for 'Foods with protein > Xg'.")
         try:
             threshold = float(protein_above_match.group(1))
+            thinking_steps.append(f"...Protein threshold: > {threshold}g.")
             if protein_col in original_df.columns and product_col in original_df.columns:
-                high_protein_foods_df = safe_numeric_filter(original_df, protein_col, lambda x: x > threshold)
+                thinking_steps.append("...Required columns found. Filtering data...")
+                high_protein_foods_df = safe_numeric_filter(original_df, protein_col, lambda x: x > threshold, f"Filtering for protein > {threshold}g.")
                 if not high_protein_foods_df.empty:
+                    thinking_steps.append("✅ **Thinking:** Found matching foods. Formatting response...")
                     response_parts.append(f"🍗 Here are foods with protein content above {threshold}g per 100g:")
-                    # Select and format columns for display
                     result_df = high_protein_foods_df[[product_col, protein_col]].head(10)
                     result_df_display = result_df.copy()
                     result_df_display[protein_col] = result_df_display[protein_col].apply(lambda x: f"{x:.2f}g")
                     table_md = result_df_display.to_markdown(index=False)
                     response_parts.append(f"\n{table_md}\n")
                 else:
-                     response_parts.append(f"📭 No foods found with protein content above {threshold}g.")
+                    thinking_steps.append(" HttpNotFound **Thinking:** No foods found meeting the protein criterion.")
+                    response_parts.append(f" HttpNotFound No foods found with protein content above {threshold}g.")
             else:
+                 thinking_steps.append("❌ **Thinking:** Required columns for protein filtering not found.")
                  response_parts.append("❌ Required columns for protein filtering not found correctly.")
         except (ValueError, IndexError):
+             thinking_steps.append("🔢 **Thinking:** Couldn't parse the protein threshold.")
              response_parts.append("🔢 I couldn't understand the protein threshold value. Please specify like 'protein content above 10g'.")
-        return "\n".join(response_parts), chart
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
 
     # --- Default/Fallback Response ---
+    thinking_steps.append("🤔 **Thinking:** Query didn't match any specific rule-based pattern.")
+    thinking_steps.append("💡 **Thinking:** Providing fallback guidance.")
     response_parts.append("🤔 I'm still learning to understand all your questions perfectly!")
     response_parts.append("\n💡 Try asking specific questions like:")
     response_parts.append("- 'Show top 5 foods highest in protein'")
     response_parts.append("- 'Find foods with fat content above 20g'")
     response_parts.append("- 'List foods with more than 30g carbs and less than 5g fat'")
     response_parts.append("- 'Nutritional breakdown of [food name]'")
-    return "\n".join(response_parts), chart
+    return "\n".join(thinking_steps), "\n".join(response_parts), chart
 
 # --- Sidebar: Upload Dataset ---
 with st.sidebar:
@@ -388,7 +411,6 @@ with st.sidebar:
 
                 # Identify columns based on known structure
                 st.session_state.column_mapping = identify_nutrition_columns(df)
-                # st.write("DEBUG: Identified Columns:", st.session_state.column_mapping) # Debug
 
                 # Auto-optimize for performance (always sample for large datasets like this one)
                 if len(df) > 1000:
@@ -432,8 +454,6 @@ with st.sidebar:
         st.write(f"**Type:** {st.session_state.data_type or 'Not processed'}")
         st.write(f"**Total Rows:** {len(st.session_state.original_df) if st.session_state.original_df is not None else 'Unknown'}")
         st.write(f"**Sample Rows Displayed:** {len(st.session_state.df)}")
-        # Show mapped column names
-        # st.write(f"**Identified Columns:** {st.session_state.column_mapping}")
         if st.session_state.df is not None:
             st.dataframe(st.session_state.df.head(3))
 
@@ -444,7 +464,16 @@ if "messages" not in st.session_state:
 # Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        # Check if the message content is a tuple (thinking, response) or just a string
+        if isinstance(msg["content"], tuple):
+            thinking_content, response_content = msg["content"]
+            if thinking_content:
+                with st.expander("🧠 My Thinking Process", expanded=False):
+                    st.markdown(thinking_content)
+            st.markdown(response_content)
+        else:
+            st.markdown(msg["content"])
+            
         if "chart" in msg and msg["chart"] is not None:
             st.plotly_chart(msg["chart"], use_container_width=True)
 
@@ -455,28 +484,36 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Simulate streaming by displaying response word by word
-        # Pass the original df and column mapping
-        full_response, chart = generate_response(
+        # Generate response with thinking
+        thinking_process, full_response, chart = generate_response_with_thinking(
             prompt,
             st.session_state.original_df,
             st.session_state.column_mapping
         )
 
-        # --- Streaming Display ---
-        if full_response: # Check if response is not None/empty
+        # --- Streaming Display for Thinking ---
+        if thinking_process:
+            with st.expander("🧠 My Thinking Process", expanded=True): # Start expanded
+                thinking_placeholder = st.empty()
+                displayed_thinking = ""
+                thinking_lines = thinking_process.splitlines()
+                for i, line in enumerate(thinking_lines):
+                    displayed_thinking += line + "\n"
+                    thinking_placeholder.markdown(displayed_thinking)
+                    # Simulate processing delay for thinking steps
+                    if "✅" not in line and "❌" not in line and " HttpNotFound" not in line and "📉" not in line and "💡" not in line and "🔍" not in line and "🔢" not in line and "🔤" not in line: # Don't delay final outcomes
+                         time.sleep(0.1) # Adjust for speed of thinking display
+
+        # --- Streaming Display for Response ---
+        if full_response:
             message_placeholder = st.empty()
             displayed_text = ""
             words = full_response.split(" ")
             for i, word in enumerate(words):
                 displayed_text += word + " "
-                # Update placeholder with text and cursor
-                message_placeholder.markdown(displayed_text + "▌")
-                # Sleep for a short duration to simulate streaming
-                # Adjust time for faster/slower streaming
-                time.sleep(0.10)
-            # Final update without the cursor
-            message_placeholder.markdown(displayed_text)
+                message_placeholder.markdown(displayed_text + "▌") # Cursor effect
+                time.sleep(0.01) # Adjust delay for streaming speed
+            message_placeholder.markdown(displayed_text) # Final display without cursor
         else:
             st.markdown("Sorry, I couldn't generate a response for that query.")
 
@@ -484,10 +521,10 @@ if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 
         if chart is not None:
             st.plotly_chart(chart, use_container_width=True)
 
-        # Store complete message in history
+        # Store complete message in history (store thinking and response separately)
         st.session_state.messages.append({
             "role": "assistant",
-            "content": full_response if full_response else "No response generated.",
+            "content": (thinking_process, full_response),
             "chart": chart
         })
 
