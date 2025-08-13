@@ -1,4 +1,4 @@
-# app.py - ফ্রি Nutrition Genius (No API Required)
+# app.py - ফিক্সড ভার্সন (কোনো প্রশ্নেই "পারছি না" দেখাবে না)
 
 import streamlit as st
 import pandas as pd
@@ -6,12 +6,11 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 import plotly.express as px
-import os
 
-# --- লোগো এবং টাইটেল ---
+# --- টাইটেল ---
 st.set_page_config(page_title="🍏 Nutrition Genius", page_icon="🍏")
 st.title("🍏 Nutrition Genius")
-st.markdown("> *ফ্রি নিউট্রিশন সহকারী - কোনো API কী ছাড়াই!*")
+st.markdown("> *ফ্রি নিউট্রিশন সহকারী - কোনো API ছাড়াই!*")
 
 # --- ডেটাসেট ---
 @st.cache_data
@@ -31,20 +30,20 @@ def load_data():
 
 df = load_data()
 
-# --- এম্বেডিং মডেল (ফ্রি) ---
+# --- এম্বেডিং মডেল ---
 @st.cache_resource
 def get_model():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 model = get_model()
 
-# --- FAISS ইনডেক্স তৈরি ---
+# --- FAISS ইনডেক্স ---
 @st.cache_resource
 def create_index():
     sentences = df.apply(lambda x: ' '.join(x.astype(str)), axis=1).tolist()
     embeddings = model.encode(sentences)
     index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(np.array(embeddings).astype('float32'))
+    index.add(embeddings.astype('float32'))
     return index, sentences
 
 index, sentences = create_index()
@@ -53,53 +52,74 @@ index, sentences = create_index()
 def retrieve(query, k=3):
     query_vec = model.encode([query])
     D, I = index.search(np.array(query_vec).astype('float32'), k)
-    return [sentences[i] for i in I[0]]
+    results = []
+    for i in I[0]:
+        if i != -1:  # Valid index
+            results.append(df.iloc[i])
+    return pd.DataFrame(results).drop_duplicates(subset="Food")
 
-# --- কোয়েরি পার্সিং এবং রেসপন্স জেনারেট ---
+# --- রেসপন্স জেনারেটর (ফিক্সড) ---
 def generate_response(query):
     query_lower = query.lower()
-    results = retrieve(query)
+    results = retrieve(query, k=3)
 
-    # Q&A
-    if "protein" in query_lower and "in" in query_lower:
-        food = query_lower.split("in")[-1].strip()
-        match = df[df['Food'].str.contains(food, case=False, na=False)]
-        if not match.empty:
-            val = match.iloc[0]['Protein (g)']
-            return f"100g {match.iloc[0]['Food']} contains {val}g of protein.", None
+    # চার্ট ডিফল্ট: None
+    chart = None
 
-    # Diet Plan
-    elif "diet plan" in query_lower or "meal plan" in query_lower:
-        foods = df.sample(4)  # র‍্যান্ডম স্যাম্পল
-        total_cal = foods['Calories'].sum()
-        return f"📋 4-item sample diet plan (Total: {total_cal} kcal):\n\n" + \
-               foods[['Food', 'Calories', 'Protein (g)', 'Carbs (g)', 'Fat (g)']].to_markdown(index=False), None
+    # যদি কিছু একটা খাবারের নাম থাকে
+    food_names = [f.lower() for f in df['Food'].tolist()]
+    matched_food = None
+    for food in food_names:
+        if food in query_lower:
+            matched_food = food.title()
+            break
 
-    # Alternatives
-    elif "allergic" in query_lower or "avoid" in query_lower or "alternative" in query_lower:
-        if "peanut" in query_lower:
-            alternatives = df[df['Food'] != 'Peanut Butter']
-            nuts = alternatives[alternatives['Category'] == 'Nut']
-            return "🥜 Safe alternatives to peanuts:\n\n" + \
-                   nuts[['Food', 'Protein (g)', 'Fat (g)']].head(3).to_markdown(index=False), None
-
-    # Nutrition Breakdown
-    elif "breakdown" in query_lower:
-        food = query_lower.replace("nutrition breakdown of", "").strip().title()
-        row = df[df['Food'].str.contains(food, case=False)]
-        if not row.empty:
-            row = row.iloc[0]
+    # Nutrition breakdown
+    if "breakdown" in query_lower or "composition" in query_lower:
+        if not results.empty:
+            row = results.iloc[0]
             fig = px.pie(
                 values=[row['Protein (g)'], row['Fat (g)'], row['Carbs (g)']],
                 names=['Protein', 'Fat', 'Carbs'],
-                title=f"{row['Food']} Nutrition"
+                title=f"{row['Food']} - Nutrition"
             )
-            return f"📊 Nutrition breakdown for {row['Food']} (per 100g):", fig
-        else:
-            return "খাবার খুঁজে পাওয়া যায়নি।", None
+            chart = fig
+            return f"📊 {row['Food']} এর পুষ্টি গঠন (প্রতি 100g):\n\n" + \
+                   f"**ক্যালোরি**: {row['Calories']} kcal\n" + \
+                   f"**প্রোটিন**: {row['Protein (g)']}g\n" + \
+                   f"**ফ্যাট**: {row['Fat (g)']}g\n" + \
+                   f"**কার্বস**: {row['Carbs (g)']}g", chart
 
-    # Default
-    return "আমি এই প্রশ্নটির উত্তর দিতে পারছি না। অনুগ্রহ করে আরও বিস্তারিত জিজ্ঞাসা করুন।", None
+    # Protein, fat, carbs query
+    if "protein" in query_lower:
+        if matched_food:
+            row = df[df['Food'].str.contains(matched_food, case=False)].iloc[0]
+            return f"🟢 {row['Food']} এর প্রোটিন: **{row['Protein (g)']}g** (প্রতি 100g)", None
+    if "calorie" in query_lower or "kcal" in query_lower:
+        if matched_food:
+            row = df[df['Food'].str.contains(matched_food, case=False)].iloc[0]
+            return f"🔥 {row['Food']} এর ক্যালোরি: **{row['Calories']} kcal** (প্রতি 100g)", None
+
+    # Diet plan
+    if "diet plan" in query_lower or "meal plan" in query_lower:
+        sample = df.sample(4)
+        return "📋 স্যাম্পল ডায়েট প্ল্যান:\n\n" + \
+               sample[['Food', 'Calories', 'Protein (g)', 'Carbs (g)', 'Fat (g)']].to_markdown(index=False), None
+
+    # Alternatives
+    if "alternative" in query_lower or "replace" in query_lower or "allergic" in query_lower:
+        if "peanut" in query_lower or "nut" in query_lower:
+            safe = df[df['Category'] != 'Nut'].sample(3)
+            return "✅ পিনাট বাদে বিকল্প:\n\n" + \
+                   safe[['Food', 'Category', 'Protein (g)']].to_markdown(index=False), None
+
+    # Default: যেকোনো প্রশ্নে সংশ্লিষ্ট খাবার দেখাও
+    if not results.empty:
+        return "🔍 খুঁজে পাওয়া তথ্য:\n\n" + \
+               results[['Food', 'Calories', 'Protein (g)', 'Fat (g)', 'Carbs (g)']].to_markdown(index=False), None
+
+    # যদি কিছু না পাওয়া যায়
+    return "❌ খাবার খুঁজে পাওয়া যায়নি। অন্য নাম চেষ্টা করুন (যেমন: spinach, banana, chicken)।", None
 
 # --- চ্যাট UI ---
 if "messages" not in st.session_state:
@@ -129,8 +149,10 @@ if prompt := st.chat_input("আপনার প্রশ্ন লিখুন..
 
 # --- সাইডবার ---
 with st.sidebar:
-    st.header("📊 ডেটাসেট")
-    st.dataframe(df[['Food', 'Calories', 'Protein (g)', 'Category']].sample(5))
-    st.caption("ফ্রি ডেমো ডেটা - Nutrition_DB.csv")
-    st.markdown("---")
-    st.markdown("💡 ট্রাই করুন:\n- `পালং শাকে কত প্রোটিন?`\n- `চিকেন ব্রেস্টের পুষ্টি গুণ`\n- `ডায়েট প্ল্যান বানাও`\n- `মুগ ডালের বিকল্প কী?`")
+    st.header("📊 ডেটা নমুনা")
+    st.dataframe(df[['Food', 'Calories', 'Protein (g)']].sample(5))
+    st.markdown("### 📌 ট্রাই করুন")
+    st.write("• পালং শাকে কত প্রোটিন?")
+    st.write("• চিকেন ব্রেস্টের পুষ্টি গুণ")
+    st.write("• কম ক্যালোরির ফল কী আছে?")
+    st.write("• বাদামের বিকল্প কী?")
