@@ -260,4 +260,322 @@ def generate_response_with_llama3(query, original_df, column_mapping, index, sen
 
     if not TRANSFORMERS_AVAILABLE:
         thinking_steps.append("❌ **Thinking:** Transformers library is not installed.")
-        response_parts.append("❌ Transformers library is not installed. Please install it with `pip
+        response_parts.append("❌ Transformers library is not installed. Please install it with `pip install transformers torch accelerate bitsandbytes`.")
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
+
+    # --- Ensure LLM Pipeline is Loaded ---
+    if st.session_state.llm_pipeline is None:
+        thinking_steps.append("🧠 **Thinking:** Loading the Llama 3 language model... This might take a while.")
+        # You can make the model name configurable via sidebar input
+        # model_name = st.sidebar.selectbox("Select Llama 3 Model", ["meta-llama/Meta-Llama-3-8B-Instruct", "unsloth/llama-3-8b-Instruct-bnb-4bit"], index=0)
+        # For this specific task, Llama 3 8B Instruct is a good choice.
+        model_name = "meta-llama/Meta-Llama-3-8B-Instruct" # Default or configurable
+        with st.spinner("Loading Llama 3 model (this can take several minutes)..."):
+            st.session_state.llm_pipeline = load_llm_pipeline(model_name=model_name, use_quantization=True)
+        if st.session_state.llm_pipeline is None:
+            thinking_steps.append("❌ **Thinking:** Failed to load the Llama 3 model.")
+            response_parts.append("❌ Failed to load the Llama 3 model. Check the logs for details. Ensure you have access to the model on Hugging Face and have provided your token if required.")
+            return "\n".join(thinking_steps), "\n".join(response_parts), chart
+        thinking_steps.append("✅ **Thinking:** Llama 3 model loaded.")
+
+    # --- Prepare Context for the LLM ---
+    thinking_steps.append("🧠 **Thinking:** Searching the dataset for relevant information...")
+    try:
+        # Use FAISS to find relevant data rows/sentences based on the query
+        retrieved_sentences = retrieve_context(query, index, sentences, k=3)
+        if retrieved_sentences:
+            # Format the retrieved context for the LLM prompt
+            # Joining sentences with newlines for clarity
+            context_str = "\n".join([f"- {sent}" for sent in retrieved_sentences])
+            thinking_steps.append(f"...Found {len(retrieved_sentences)} relevant data entries using similarity search.")
+        else:
+             # Fallback: If FAISS retrieval fails or returns nothing, use a simple sample
+             # This is less ideal but ensures some context is provided.
+             thinking_steps.append("...No context found via similarity search. Using a sample of the dataset as context.")
+             sample_rows = original_df.sample(min(2, len(original_df)), random_state=42)
+             # Use the column mapping to select relevant columns for the sample context
+             cols_to_show = [col for col in [column_mapping.get('product'), column_mapping.get('fat_100g'),
+                                            column_mapping.get('carbohydrates_100g'), column_mapping.get('proteins_100g'),
+                                            column_mapping.get('energy_kcal'), column_mapping.get('fiber_100g')]
+                             if col in original_df.columns]
+             if cols_to_show and column_mapping.get('product'):
+                 context_str = "Sample Data Context:\n" + sample_rows[cols_to_show].to_string(index=False)
+             else:
+                 # Ultimate fallback if column mapping is incomplete
+                 context_str = "Sample Data Context (All Columns):\n" + sample_rows.to_string(index=False)
+
+    except Exception as e:
+        thinking_steps.append(f"❌ **Thinking:** Error during data retrieval/preparation: {e}")
+        response_parts.append(f"Sorry, I encountered an error preparing the data context: {e}")
+        return "\n".join(thinking_steps), "\n".join(response_parts), chart
+
+    # --- Construct the Prompt for the LLM ---
+    # Llama 3 Instruct models expect specific prompt formatting for best results.
+    # Using the chat template if available, or a structured prompt otherwise.
+    system_message = (
+        "You are a helpful and knowledgeable Nutrition Assistant. A user has uploaded a food nutrition dataset (nutrition_table.csv). "
+        "You have access to specific data snippets from that dataset relevant to the user's query. "
+        "Your task is to answer the user's query using the provided data context. "
+        "Your response should be in two parts: "
+        "1.  **Thinking Process:** A numbered list detailing your reasoning steps. Start with \"1. Analyzing the query...\", \"2. Referring to the data context...\", etc. Be concise. "
+        "2.  **Final Response:** A clear, natural language answer to the user's query. If the query asks for a list or table, format it nicely. If the query asks for a breakdown suitable for a chart, state the values clearly. "
+    )
+    user_message = (
+        f"Here is the user's query: "
+        f"<query> "
+        f"{query} "
+        f"</query> "
+        f"Here is the relevant data context from the uploaded dataset: "
+        f"<context> "
+        f"{context_str} "
+        f"</context> "
+        f"Please provide your response in the following format: "
+        f"<thinking> "
+        f"1. [First step of your reasoning] "
+        f"2. [Second step of your reasoning] "
+        f"... "
+        f"N. [Final step, leading to the conclusion] "
+        f"</thinking> "
+        f"<response> "
+        f"[Your clear, natural language response to the user based on the query and context.] "
+        f"</response> "
+    )
+
+    # Format messages according to Llama 3 Instruct expectations using the tokenizer's chat template
+    # This often produces better results than a simple string prompt.
+    try:
+        # Ensure the tokenizer is available from the pipeline
+        if hasattr(st.session_state.llm_pipeline, 'tokenizer'):
+            tokenizer = st.session_state.llm_pipeline.tokenizer
+        else:
+            # Fallback if pipeline doesn't expose tokenizer directly (less likely)
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct", use_auth_token=True)
+
+        messages = [
+            {"role": "system", "content": system_message.strip()},
+            {"role": "user", "content": user_message.strip()},
+        ]
+        # Apply the chat template to format the prompt correctly for Llama 3
+        # The `add_generation_prompt` argument is important for instruct models.
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # st.write(f"Debug: Formatted Prompt Length: {len(prompt)} chars") # Optional debug
+
+    except Exception as e_template:
+        st.warning(f"Could not apply chat template, falling back to string prompt: {e_template}")
+        # Fallback to a simple concatenated prompt if template fails
+        prompt = f"{system_message}\n\n{user_message}"
+
+    thinking_steps.append("🤖 **Thinking:** Sending query and context to the local Llama 3 language model...")
+    try:
+        # --- Call the Llama 3 Pipeline ---
+        # The pipeline handles tokenization, generation, and decoding
+        # We pass the formatted prompt string.
+        outputs = st.session_state.llm_pipeline(prompt)
+        # Extract the generated text from the output list
+        # The output is usually a list of dicts, e.g., [{'generated_text': '...'}]
+        raw_llm_output = outputs[0]["generated_text"]
+
+        thinking_steps.append("✅ **Thinking:** Received response from the Llama 3 model.")
+        # --- Parse the LLM Output ---
+        # Attempt to extract the <thinking> and <response> sections using regex
+        thinking_match = re.search(r"<thinking>(.*?)</thinking>", raw_llm_output, re.DOTALL)
+        response_match = re.search(r"<response>(.*?)</response>", raw_llm_output, re.DOTALL)
+
+        if thinking_match:
+            llm_thinking = thinking_match.group(1).strip()
+            # Add LLM's thinking steps to our display
+            thinking_steps.append("--- Model's Own Reasoning Steps ---")
+            thinking_steps.append(llm_thinking)
+        else:
+            # If the model didn't follow the exact format, show the raw output or a note
+            thinking_steps.append("--- Model Output (Format Parsing Failed) ---")
+            # Limit the length of raw output shown
+            thinking_steps.append(raw_llm_output[:1000] + "..." if len(raw_llm_output) > 1000 else raw_llm_output)
+
+        if response_match:
+            final_response = response_match.group(1).strip()
+            response_parts.append(final_response)
+        else:
+            # Handle case where <response> tag is missing
+            response_parts.append("I couldn't generate a clear final answer based on the model's output.")
+            response_parts.append("\n--- Raw Model Output ---\n")
+            response_parts.append(raw_llm_output[:1000] + "..." if len(raw_llm_output) > 1000 else raw_llm_output)
+
+    except Exception as e:
+        # Catch any errors during the LLM call or output processing
+        thinking_steps.append(f"❌ **Thinking:** Error calling the Llama 3 model or processing its output: {e}")
+        response_parts.append(f"Sorry, I encountered an error while trying to think about your query with the local Llama 3 model: {e}")
+
+    return "\n".join(thinking_steps), "\n".join(response_parts), chart # Return chart as None for now
+
+
+# --- Sidebar: Upload Dataset ---
+with st.sidebar:
+    st.header("📁 Upload Your Dataset")
+    st.markdown("Developed by: [DM Shahriar Hossain](https://github.com/rownokstar/)")
+    uploaded_file = st.file_uploader("Upload CSV (e.g., nutrition_table.csv)", type=["csv"])
+
+    # --- Optional: Model Selection (Advanced) ---
+    # if TRANSFORMERS_AVAILABLE:
+    #     st.subheader("🤖 LLM Settings (Advanced)")
+    #     model_options = {
+    #         "Llama 3 8B (Quantized - Recommended)": "unsloth/llama-3-8b-Instruct-bnb-4bit",
+    #         "Llama 3 8B (Full - Needs HF Token & Resources)": "meta-llama/Meta-Llama-3-8B-Instruct",
+    #         # Add other models as needed
+    #     }
+    #     selected_model = st.selectbox("Select Model", list(model_options.keys()), index=0)
+    #     selected_model_name = model_options[selected_model]
+    #     # Store selected model in session state if needed for dynamic loading
+
+    if uploaded_file is not None:
+        with st.spinner("📥 Loading dataset..."):
+            try:
+                # Load dataset - Crucially, specify header=None as the first row is data in nutrition_table.csv
+                df = pd.read_csv(uploaded_file, header=None)
+                st.session_state.original_df = df.copy()
+                # Identify columns based on the known structure of nutrition_table.csv
+                st.session_state.column_mapping = identify_nutrition_columns(df)
+
+                if len(df) > 1000:
+                    df_display = df.sample(min(5, len(df)), random_state=42)
+                    df_process = df.sample(min(2000, len(df)), random_state=42)
+                    st.warning(f"📊 Large dataset detected ({len(df)} rows). Processing a sample for optimal performance.")
+                else:
+                    df_display = df.head(5)
+                    df_process = df
+
+                st.session_state.df = df_display
+                detected_type = detect_dataset_type(df_process)
+                st.session_state.data_type = detected_type
+
+                st.success(f"✅ Dataset loaded! Detected as: **{detected_type.upper()}**")
+
+                with st.spinner("🚀 Processing dataset... (This should be quick now)"):
+                    index, sentences, success, error = smart_process_dataset(df_process, detected_type)
+
+                if success:
+                    st.session_state.index = index
+                    st.session_state.sentences = sentences
+                    st.session_state.processed = True
+                    st.success("✅ Dataset processed & ready for queries!")
+                    st.balloons()
+                else:
+                    st.error(f"❌ Processing failed: {error}")
+
+            except Exception as e:
+                st.error(f"❌ Error loading dataset: {str(e)}")
+                # Reset state on error
+                st.session_state.original_df = None
+                st.session_state.column_mapping = {}
+                st.session_state.index = None
+                st.session_state.sentences = None
+                st.session_state.processed = False
+
+    if st.session_state.df is not None and st.session_state.column_mapping:
+        st.subheader("📊 Dataset Info")
+        st.write(f"**Type:** {st.session_state.data_type or 'Not processed'}")
+        st.write(f"**Total Rows:** {len(st.session_state.original_df) if st.session_state.original_df is not None else 'Unknown'}")
+        st.write(f"**Sample Rows Displayed:** {len(st.session_state.df)}")
+        if st.session_state.df is not None:
+            st.dataframe(st.session_state.df.head(3))
+
+# --- Chat UI ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        # Check if the message content is a tuple (thinking, response) or just a string
+        if isinstance(msg["content"], tuple):
+            thinking_content, response_content = msg["content"]
+            if thinking_content:
+                # Display the "Thinking Process" in an expander
+                with st.expander("🧠 My Thinking Process", expanded=False):
+                    st.markdown(thinking_content)
+            # Display the main response
+            st.markdown(response_content)
+        else:
+            # Fallback for older messages or errors
+            st.markdown(msg["content"])
+
+        # Display chart if it exists in the message
+        if "chart" in msg and msg["chart"] is not None:
+            st.plotly_chart(msg["chart"], use_container_width=True)
+
+# Chat input
+if prompt := st.chat_input("Ask about foods, nutrients, or diets... (e.g., 'Top 5 high protein foods')"):
+    # Add user message to history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    # Display user message
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generate assistant response
+    with st.chat_message("assistant"):
+        # --- Call the NEW Llama 3-based function ---
+        thinking_process, full_response, chart = generate_response_with_llama3(
+            prompt,
+            st.session_state.original_df,
+            st.session_state.column_mapping,
+            st.session_state.index,
+            st.session_state.sentences
+        )
+
+        # --- Streaming Display for Thinking ---
+        if thinking_process:
+            with st.expander("🧠 My Thinking Process", expanded=True): # Start expanded for visibility
+                thinking_placeholder = st.empty()
+                displayed_thinking = ""
+                thinking_lines = thinking_process.splitlines()
+                for i, line in enumerate(thinking_lines):
+                    displayed_thinking += line + "\n"
+                    thinking_placeholder.markdown(displayed_thinking)
+                    # Simulate processing delay for thinking steps for better readability
+                    # Reduced frequency of delay to make it feel smoother but still slow
+                    # Avoid delaying final outcome messages (marked with emojis)
+                    if i % 2 == 0 and not any(marker in line for marker in ["✅", "❌", " HttpNotFound", "📉", "💡", "🔍", "🔢", "🔤", "---"]):
+                         time.sleep(0.2) # Slower delay for thinking steps
+
+        # --- Streaming Display for Response (SLOWED DOWN) ---
+        if full_response:
+            message_placeholder = st.empty()
+            displayed_text = ""
+            words = full_response.split(" ")
+            # --- ADJUSTED STREAMING SPEED ---
+            # New delay is 0.05 seconds per word. Adjust the 0.05 value to make it faster/slower.
+            word_delay = 0.05 # Slower speed for eye comfort
+
+            for i, word in enumerate(words):
+                displayed_text += word + " "
+                message_placeholder.markdown(displayed_text + "▌") # Cursor effect
+                # --- SLOWED DOWN DELAY ---
+                time.sleep(word_delay) # Increased delay for a more eye-soothing pace
+            message_placeholder.markdown(displayed_text) # Final display without cursor
+        else:
+            # Handle case where no response was generated
+            st.markdown("Sorry, I couldn't generate a response for that query.")
+
+        # Display chart if generated (Note: Chart generation logic not integrated with Llama 3 yet)
+        # You would need to parse the LLM response to identify if a chart is requested and what data to use.
+        # For now, we keep the chart variable but it won't be populated by the Llama 3 function.
+        if chart is not None:
+            st.plotly_chart(chart, use_container_width=True)
+
+        # Store complete message in history (store thinking and response separately)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": (thinking_process, full_response), # Store as tuple
+            "chart": chart # Store chart
+        })
+
+# --- Tips ---
+st.info("💡 **Pro Tip:** The more specific your question, the better the answer!")
+st.info("📋 **Try these examples:**\n"
+        "- 'Show top 5 foods highest in protein'\n"
+        "- 'Find foods with fat content above 30g'\n"
+        "- 'List foods with more than 25g carbs and less than 3g fat'\n"
+        "- 'Nutritional breakdown of Greek Yogurt'")
+st.markdown("---")
+st.markdown("👨‍💻 Developed by: [DM Shahriar Hossain](https://linkedin.com/in/dm-shahriar-hossain/) | [GitHub](https://github.com/rownokstar/)")
