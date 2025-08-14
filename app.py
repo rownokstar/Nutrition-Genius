@@ -205,7 +205,7 @@ def load_llm_pipeline(model_name="meta-llama/Meta-Llama-3-8B-Instruct", use_quan
                 model_kwargs["quantization_config"] = quantization_config
                 st.info("🔧 Using 4-bit quantization for Llama 3 model (requires bitsandbytes).")
             except Exception as e_quant:
-                st.warning(f".bitsandbytes not available or failed to configure quantization: {e_quant}. Running without quantization (may require more memory).")
+                st.warning(f"bitsandbytes not available or failed to configure quantization: {e_quant}. Running without quantization (may require more memory).")
                 # Continue without quantization if bnb is not available or fails
 
         # --- Load Model and Tokenizer ---
@@ -260,59 +260,4 @@ def generate_response_with_llama3(query, original_df, column_mapping, index, sen
 
     if not TRANSFORMERS_AVAILABLE:
         thinking_steps.append("❌ **Thinking:** Transformers library is not installed.")
-        response_parts.append("❌ Transformers library is not installed. Please install it with `pip install transformers torch accelerate bitsandbytes`.")
-        return "\n".join(thinking_steps), "\n".join(response_parts), chart
-
-    # --- Ensure LLM Pipeline is Loaded ---
-    if st.session_state.llm_pipeline is None:
-        thinking_steps.append("🧠 **Thinking:** Loading the Llama 3 language model... This might take a while.")
-        # You can make the model name configurable via sidebar input
-        # model_name = st.sidebar.selectbox("Select Llama 3 Model", ["meta-llama/Meta-Llama-3-8B-Instruct", "unsloth/llama-3-8b-Instruct-bnb-4bit"], index=0)
-        # For this specific task, Llama 3 8B Instruct is a good choice.
-        model_name = "meta-llama/Meta-Llama-3-8B-Instruct" # Default or configurable
-        with st.spinner("Loading Llama 3 model (this can take several minutes)..."):
-            st.session_state.llm_pipeline = load_llm_pipeline(model_name=model_name, use_quantization=True)
-        if st.session_state.llm_pipeline is None:
-            thinking_steps.append("❌ **Thinking:** Failed to load the Llama 3 model.")
-            response_parts.append("❌ Failed to load the Llama 3 model. Check the logs for details. Ensure you have access to the model on Hugging Face and have provided your token if required.")
-            return "\n".join(thinking_steps), "\n".join(response_parts), chart
-        thinking_steps.append("✅ **Thinking:** Llama 3 model loaded.")
-
-    # --- Prepare Context for the LLM ---
-    thinking_steps.append("🧠 **Thinking:** Searching the dataset for relevant information...")
-    try:
-        # Use FAISS to find relevant data rows/sentences based on the query
-        retrieved_sentences = retrieve_context(query, index, sentences, k=3)
-        if retrieved_sentences:
-            # Format the retrieved context for the LLM prompt
-            # Joining sentences with newlines for clarity
-            context_str = "\n".join([f"- {sent}" for sent in retrieved_sentences])
-            thinking_steps.append(f"...Found {len(retrieved_sentences)} relevant data entries using similarity search.")
-        else:
-             # Fallback: If FAISS retrieval fails or returns nothing, use a simple sample
-             # This is less ideal but ensures some context is provided.
-             thinking_steps.append("...No context found via similarity search. Using a sample of the dataset as context.")
-             sample_rows = original_df.sample(min(2, len(original_df)), random_state=42)
-             # Use the column mapping to select relevant columns for the sample context
-             cols_to_show = [col for col in [column_mapping.get('product'), column_mapping.get('fat_100g'),
-                                            column_mapping.get('carbohydrates_100g'), column_mapping.get('proteins_100g'),
-                                            column_mapping.get('energy_kcal'), column_mapping.get('fiber_100g')]
-                             if col in original_df.columns]
-             if cols_to_show and column_mapping.get('product'):
-                 context_str = "Sample Data Context:\n" + sample_rows[cols_to_show].to_string(index=False)
-             else:
-                 # Ultimate fallback if column mapping is incomplete
-                 context_str = "Sample Data Context (All Columns):\n" + sample_rows.to_string(index=False)
-
-    except Exception as e:
-        thinking_steps.append(f"❌ **Thinking:** Error during data retrieval/preparation: {e}")
-        response_parts.append(f"Sorry, I encountered an error preparing the data context: {e}")
-        return "\n".join(thinking_steps), "\n".join(response_parts), chart
-
-    # --- Construct the Prompt for the LLM ---
-    # Llama 3 Instruct models expect specific prompt formatting for best results.
-    # Using the chat template if available, or a structured prompt otherwise.
-    system_message = """
-    You are a helpful and knowledgeable Nutrition Assistant. A user has uploaded a food nutrition dataset (nutrition_table.csv).
-    You have access to specific data snippets from that dataset relevant to the user's query.
-
+        response_parts.append("❌ Transformers library is not installed. Please install it with `pip
