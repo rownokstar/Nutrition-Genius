@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Open Source](https://img.shields.io/badge/Open%20Source-%E2%9D%A4-red?style=for-the-badge)](https://opensource.org)
 
-**Nutrition Genius** is a revolutionary AI-powered web application that **automatically detects your dataset type** (supervised/unsupervised), processes it intelligently, and provides interactive insights through natural language queries. No API keys required – 100% free and open-source!
+**Nutrition Genius** is a revolutionary AI-powered web application that **automatically detects your dataset type** (supervised/unsupervised), processes it intelligently, and provides interactive insights through natural language queries. 100% free and open-source!
 
 > 🚀 **Upload any CSV** → 🤖 **AI auto-detects type** → 💡 **Get instant insights**
 
